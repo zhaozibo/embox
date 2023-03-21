@@ -9,6 +9,8 @@
 #include <drivers/pci/pci_chip/pci_utils.h>
 #include <drivers/pci/pci.h>
 
+#include <drivers/common/memory.h>
+
 #include <embox/unit.h>
 
 #include <1888bc048_pci.h>
@@ -89,6 +91,13 @@ uint32_t pci_write_config32(uint32_t bus, uint32_t dev_fn, uint32_t where,	uint3
 	return PCIUTILS_SUCCESS;
 }
 
+
+/* NOTE: this may be inaccurate! */
+unsigned int pci_irq_number(struct pci_slot_dev *dev) {
+	return (unsigned int) dev->irq_line;
+}
+
+
 static void PCIE_RC_OutboundRegion_Init(int region_no, int type, uint8_t num_pass_bits, uint32_t addr)
 {
   PCIE->AXI.OutboundRegion[region_no].AddrTrans0 = (addr | num_pass_bits);
@@ -166,8 +175,12 @@ uint32_t PCIE_RC_Check(uint8_t bus, uint8_t dev, uint8_t func)
 {
   uint32_t vendor = 0;
   uint32_t busdev = PCIE_ADDR(bus, dev, func, PCI_VENDOR_ID);
+  log_debug("line %d", __LINE__);
+  log_debug("PCIE_WINDOW %x: busdev:%x ", PCIE_WINDOW, busdev);
   vendor = *((__IO uint32_t*)(PCIE_WINDOW + busdev));
+  log_debug("line %d", __LINE__);
   if ( (PCIE_WINDOW + busdev) == __get_DFAR() ) {
+	  log_debug("line %d", __LINE__);
     return (uint32_t) -1;
   }
   log_debug("Device ID = 0x%04X Vendor ID = 0x%04X\r\n", (uint16_t)(vendor >> 16), (uint16_t)vendor);
@@ -194,6 +207,7 @@ static uint32_t* PCIE_RC_Init(void)
   uint8_t Header_Type;
   uint32_t tickstart;
 
+  log_debug("Start");
   // PCIe Software Reset On
   PCIE_PHY->Reset = RESET;
   // Disable Link Training
@@ -204,25 +218,26 @@ static uint32_t* PCIE_RC_Init(void)
   PCIE_PHY->Reset = SET;
   // Wait until PLL locked
   while ( PCIE_PHY->Reset != SET );
+  log_debug("line %d", __LINE__);
   // Set PCI CLASS BRIDGE
   *((__IO uint16_t*)(((uint32_t)&PCIE->RootPort.RevisionClass) + sizeof(uint16_t) + PCIE_RC_APB_ACCESS)) = PCI_CLASS_BRIDGE;
   // Enable Link Training
   PCIE_PHY->BaseSettings.link_training_enable_reg = SET;
-
+  log_debug("line %d", __LINE__);
   tickstart = HAL_GetTick();
   // Wait until training complete
   while ( (!(PCIE->LocMgmt.PhyConf0 & LINK_UP_Msk)) && ((HAL_GetTick() - tickstart) < TRAINING_COMPLETE_TIMEOUT) );
-
+  log_debug("line %d", __LINE__);
   if ( (HAL_GetTick() - tickstart) >= TRAINING_COMPLETE_TIMEOUT ) {
     return ret;
   }
-
+  log_debug("line %d", __LINE__);
   // Check that the link is up
   if ( PCIE->LocMgmt.PhyConf0 & LINK_UP_Msk ) {
     log_debug("PCIe link up");
     // Clear AXI link-down status
     PCIE->AXI.Axi10 = RESET;
-
+    log_debug("line %d", __LINE__);
     switch ( PCIE->LocMgmt.PhyConf0 & NEGOTIATED_LANE_COUNT_Msk ) {
       case LINK_WIDTH_X1:
         log_debug("link width:  x1");
@@ -237,7 +252,7 @@ static uint32_t* PCIE_RC_Init(void)
         log_debug("link width:  x8");
         break;
     }
-
+    log_debug("line %d", __LINE__);
     switch ( PCIE->LocMgmt.PhyConf0 & NEGOTIATED_SPEED_Msk ) {
       case NEGOTIATED_SPEED_2_5G:
         log_debug("link speed:  2.5GTs");
@@ -246,7 +261,7 @@ static uint32_t* PCIE_RC_Init(void)
         log_debug("link speed:  5.0GTs");
         break;
     }
-
+    log_debug("line %d", __LINE__);
     // Set Bus Master
     PCIE->RootPort.Command.IO_SpaceEnable = SET;
     PCIE->RootPort.Command.MEM_SpaceEnable = SET;
@@ -255,30 +270,35 @@ static uint32_t* PCIE_RC_Init(void)
     PCIE->RootPort.DevCtrlStatus.MaxPayloadSize = MAX_PAYLOAD_256B;
 
     PCIE->LocMgmt.BarConf = BAR_CFG_CTRL_MEM | BAR_APERTURE_4GB;
-
+    log_debug("line %d", __LINE__);
     // Configuration AXI OutboundRegion for TYPE0_CFG
     PCIE_RC_OutboundRegion_Init(0, AXI_OBR_DESC0_TYPE_CFG_TYPE0, (27 - 1), PCIE_WINDOW);
     // Configuration AXI InboundRegion for BAR0 needed for MSI
     PCIE_RC_InboundRegion_Init(0, (32 - 1), 0);
-
+    log_debug("line %d", __LINE__);
     // For each function
     for ( FUNCi = 0; FUNCi < 8; FUNCi++ ) {    
+    	log_debug("line %d", __LINE__);
       if ( PCIE_RC_Check(0, 0, FUNCi) == -1 ) {
         continue;
       }
+      log_debug("line %d", __LINE__);
       __pci_func_list[FUNCi] = true;
       // Configuration EP BAR[0-5]
       for ( BARi = 0; BARi < 6; BARi++ ) {
         pBAR = PCIE_RC_Alloc(0, 0, FUNCi, BARi, pBAR);
       }
+      log_debug("line %d", __LINE__);
       busdev = PCIE_ADDR(0, 0, FUNCi, PCI_HEADER_TYPE);
       Header_Type = *((__IO uint8_t*)(PCIE_WINDOW + busdev));
       if ( !(Header_Type & (1 << 7)) ) {
         break;
       }
+      log_debug("line %d", __LINE__);
     }
     ret = (uint32_t *)PCIE_WINDOW;
   }
+  log_debug("line %d", __LINE__);
   return ret;
 }
 
@@ -289,7 +309,10 @@ static int rcm_pci_init(void) {
 	return 0;
 }
 
-/* NOTE: this may be inaccurate! */
-unsigned int pci_irq_number(struct pci_slot_dev *dev) {
-	return (unsigned int) dev->irq_line;
-}
+PERIPH_MEMORY_DEFINE(SCTL, 0x0108D000, 0x1000);
+
+PERIPH_MEMORY_DEFINE(PCIE_CONT, 0x01058000,0x8000);
+
+PERIPH_MEMORY_DEFINE(GLOBAL_TIMERS, 0x0108E000, 0x1000);
+
+PERIPH_MEMORY_DEFINE(WINDOW, PCIE_WINDOW, 0x10000);
